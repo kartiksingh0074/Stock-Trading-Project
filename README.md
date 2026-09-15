@@ -23,6 +23,207 @@ A full-stack paper-trading web app built with Next.js 15. Trade real stocks with
 - **Market Data:** Finnhub API, TradingView widgets
 - **Styling:** Tailwind CSS
 
+## Architecture — Data Flow Diagram
+
+**Context Diagram (Level 0)**
+
+```mermaid
+flowchart TD
+    Trader([Trader / User])
+    Finnhub[[Finnhub API]]
+    Stripe[[Stripe]]
+
+    System(("Stock Trading<br/>Platform"))
+
+    Trader -- "sign up / trade / set alerts" --> System
+    System -- "portfolio, quotes, charts" --> Trader
+
+    System -- "quote requests" --> Finnhub
+    Finnhub -- "price data" --> System
+
+    System -- "checkout session" --> Stripe
+    Stripe -- "webhook: payment completed" --> System
+```
+
+**Level 1 — Major Processes**
+
+```mermaid
+flowchart TD
+    Trader([Trader])
+    Finnhub[[Finnhub API]]
+    Stripe[[Stripe]]
+
+    P1("1.0 Authenticate User")
+    P2("2.0 Manage Watchlist")
+    P3("3.0 Execute Buy/Sell Trade")
+    P4("4.0 Track Portfolio & Net Worth")
+    P5("5.0 Manage Price Alerts")
+    P6("6.0 Process Upgrade Payment")
+    P7("7.0 Fetch & Cache Market Data")
+    P8("8.0 Compute Leaderboard")
+
+    D1[("User / Session / Account")]
+    D2[("WatchlistItem")]
+    D3[("Transaction")]
+    D4[("PortfolioHolding")]
+    D5[("PortfolioSnapshot")]
+    D6[("PriceAlert")]
+    D7[("Payment")]
+    D8[("Redis Cache<br/>(quotes + rate limit)")]
+
+    Trader -- credentials --> P1
+    P1 -- session cookie --> Trader
+    P1 <--> D1
+
+    Trader -- add/remove symbol --> P2
+    P2 <--> D2
+    P2 -- symbol --> P7
+
+    Trader -- buy/sell order --> P3
+    P3 -- symbol --> P7
+    P7 -- authoritative price --> P3
+    P3 --> D3
+    P3 --> D4
+    P3 --> D5
+    P3 -- confirmation --> Trader
+
+    D4 -- holdings --> P4
+    D5 -- history --> P4
+    P4 -- net worth chart --> Trader
+
+    D1 <--> P8
+    P8 -- ranking --> Trader
+
+    Trader -- create/update alert --> P5
+    P5 <--> D6
+    P5 -- symbol --> P7
+    P7 -- current price --> P5
+
+    Trader -- select plan --> P6
+    P6 <--> D7
+    P6 -- checkout session --> Stripe
+    Stripe -- webhook event --> P6
+    P6 -- credit cash / upgrade tier --> D1
+
+    P7 <--> D8
+    P7 <--> Finnhub
+```
+
+## Database Schema — ER Diagram
+
+```mermaid
+erDiagram
+    USER ||--o{ SESSION : has
+    USER ||--o{ ACCOUNT : has
+    USER ||--o{ WATCHLIST_ITEM : watches
+    USER ||--o{ TRANSACTION : places
+    USER ||--o{ PAYMENT : makes
+    USER ||--o{ PORTFOLIO_HOLDING : holds
+    USER ||--o{ PORTFOLIO_SNAPSHOT : snapshots
+    USER ||--o{ PRICE_ALERT : sets
+
+    USER {
+        string id PK
+        string name
+        string email UK
+        boolean emailVerified
+        string country
+        decimal cashBalance
+        string tier
+        decimal lastNetWorth
+        datetime createdAt
+    }
+
+    SESSION {
+        string id PK
+        string userId FK
+        string token UK
+        datetime expiresAt
+        string ipAddress
+        string userAgent
+    }
+
+    ACCOUNT {
+        string id PK
+        string userId FK
+        string accountId
+        string providerId
+        string accessToken
+        string refreshToken
+        string password
+    }
+
+    WATCHLIST_ITEM {
+        string id PK
+        string userId FK
+        string symbol
+        string company
+        datetime addedAt
+    }
+
+    TRANSACTION {
+        string id PK
+        string userId FK
+        string symbol
+        string company
+        string type
+        int quantity
+        decimal price
+        decimal totalAmount
+        datetime executedAt
+    }
+
+    PAYMENT {
+        string id PK
+        string userId FK
+        string stripeSessionId UK
+        string stripePaymentIntentId
+        int amountCents
+        string currency
+        string planId
+        decimal creditsGranted
+        string status
+        datetime createdAt
+    }
+
+    PORTFOLIO_HOLDING {
+        string id PK
+        string userId FK
+        string symbol
+        string company
+        int quantity
+        decimal averageBuyPrice
+        decimal totalCost
+        datetime updatedAt
+    }
+
+    PORTFOLIO_SNAPSHOT {
+        string id PK
+        string userId FK
+        decimal cashBalance
+        decimal investedValue
+        decimal netWorth
+        datetime capturedAt
+    }
+
+    PRICE_ALERT {
+        string id PK
+        string userId FK
+        string symbol
+        string company
+        string alertName
+        string alertType
+        decimal threshold
+        string status
+        datetime triggeredAt
+    }
+```
+
+Notes:
+- `WATCHLIST_ITEM` and `PORTFOLIO_HOLDING` each enforce a unique `(userId, symbol)` pair — one row per symbol per user.
+- `PAYMENT.stripeSessionId` is unique, letting the Stripe webhook handler safely ignore duplicate delivery of the same event.
+- `PORTFOLIO_SNAPSHOT` rows are append-only, written inside the same transaction as a buy/sell, and drive both the net-worth chart and (via `USER.lastNetWorth`) the leaderboard.
+
 ## Getting Started
 
 ### Prerequisites
